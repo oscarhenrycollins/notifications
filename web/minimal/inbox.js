@@ -41,7 +41,7 @@
     if (selected) paintDetail();
   }
 
-  /* ---- list | detail strip (phone, Miguel's skins): the same joined strip as Chats' list ⇄ thread ----
+  /* ---- list | detail strip (phone, Miguel's skins only; James owns gestures on his): the same joined strip as Chats' list ⇄ thread ----
    * Numbers are Chats' own (wizard-ux web/core/swipe-strip.js): lock after 10px, horizontal when |dx| > 1.3·|dy|,
    * release goes back past 70px or above 0.45px/ms, 240ms cubic-bezier(.2,.8,.2,1); the outer 24px of the screen
    * is left to the system edge swipe (skin API edgeInset). The page runs in an iframe, so the shell never sees
@@ -56,7 +56,7 @@
       try { const s = parent !== window && parent.document.documentElement.dataset.shell; if (s) return s === 'phone'; } catch (_) {}
       return matchMedia('(pointer: coarse)').matches;
     }
-    api.on = () => { const skin = document.documentElement.dataset.skin; return (!skin || OURS.has(skin)) && phone() && innerWidth < 768; };
+    api.on = () => { const skin = document.documentElement.dataset.skin; return !!skin && OURS.has(skin) && phone() && innerWidth < 768; };
     api.busy = () => !!ghost;
     const W = () => app.getBoundingClientRect().width || innerWidth;
     const put = (x, w) => { ghost.style.transform = 'translate3d(' + (x - w) + 'px,0,0)'; app.style.transform = 'translate3d(' + x + 'px,0,0)'; };

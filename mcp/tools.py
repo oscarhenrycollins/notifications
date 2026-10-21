@@ -244,7 +244,8 @@ def inbox_route(method, path, query, headers, body):
     sub = path[len(INBOX):] if path.startswith(INBOX) else ""
     q = urllib.parse.parse_qs(query)
     if method == "GET" and sub in ("", "index.html"):
-        html = MINIMAL_HTML if (q.get("layout") or [""])[0] == "minimal" else PAGE_HTML.replace('<script defer', '<script src="layout.js"></script><script defer')
+        # One inbox for every skin; ?layout=original keeps the previous screen reachable (rollback / comparison).
+        html = PAGE_HTML if (q.get("layout") or [""])[0] == "original" else MINIMAL_HTML
         return 200, "text/html; charset=utf-8", html.encode()
     if method == "GET" and sub in MINIMAL_ASSETS:
         mime, content = MINIMAL_ASSETS[sub]

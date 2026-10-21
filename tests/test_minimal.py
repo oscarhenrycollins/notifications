@@ -9,16 +9,31 @@ def constants(path):
             except (ValueError, TypeError, AttributeError): pass
     return result
 class MinimalInboxTests(unittest.TestCase):
-    def test_skin_gate(self):
-        gate = constants(ROOT/'mcp/minimal_assets.py')['MINIMAL_ASSETS']['layout.js'][1]
-        for skin in ['obsidian','obsidian-light','landscapes','nebula','grove','tide','ember','signal']:
-            for minimal in [False, True]:
-                url = 'https://wizard.example/notifications/' + ('?layout=minimal' if minimal else '')
-                code = 'const vm=require("node:vm");let result=null;const location={href:'+json.dumps(url)+',replace:u=>result=u};const window={WizardApp:{theme:{onChange:fn=>fn({skin:'+json.dumps(skin)+'})}}};vm.runInNewContext('+json.dumps(gate)+',{window,location,URL,document:{documentElement:{dataset:{}}}});console.log(JSON.stringify(result));'
-                result = json.loads(subprocess.check_output(['node','-e',code]))
-                wanted = skin in ['obsidian','obsidian-light','landscapes']
-                self.assertEqual(result is not None, wanted != minimal)
-                if result is not None: self.assertEqual('layout=minimal' in result, wanted)
+    def test_every_skin_gets_the_minimal_inbox(self):
+        # No skin gate: the page served by default is the minimal inbox, ?layout=original is the previous screen.
+        tools = (ROOT/'mcp/tools.py').read_text()
+        self.assertIn('html = PAGE_HTML if (q.get("layout") or [""])[0] == "original" else MINIMAL_HTML', tools)
+        assets = constants(ROOT/'mcp/minimal_assets.py')
+        self.assertNotIn('layout.js', assets['MINIMAL_HTML'])
+        gate = assets['MINIMAL_ASSETS']['layout.js'][1]
+        for word in ['obsidian', 'location.replace', 'searchParams']:
+            self.assertNotIn(word, gate)
+    def test_both_screens_still_exist(self):
+        consts = constants(ROOT/'mcp/minimal_assets.py')
+        self.assertIn('data-filter="unread"', consts['MINIMAL_HTML']); self.assertIn('data-filter="all"', consts['MINIMAL_HTML'])
+        self.assertIn('nt-tabs', constants(ROOT/'mcp/tools.py')['PAGE_HTML'])
+    def test_swipe_strip_stays_on_miguels_skins_only(self):
+        source = (ROOT/'web/minimal/inbox.js').read_text()
+        self.assertIn("return !!skin && OURS.has(skin) && phone() && innerWidth < 768;", source)
+        self.assertNotIn('(!skin || OURS.has(skin))', source)
+    def test_james_skins_use_their_own_tokens(self):
+        css = (ROOT/'web/minimal/styles.css').read_text()
+        import re
+        self.assertIsNone(re.search(r'#[0-9a-fA-F]{3,8}\b|rgba?\(', css), 'colours come from skin tokens only')
+        self.assertNotIn('font-family: "WOS', css); self.assertNotIn('Sora', css); self.assertNotIn('Inter', css)
+        self.assertIn('.nt-filters button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent);', css)
+        self.assertIn('html:is([data-skin="obsidian"], [data-skin="obsidian-light"], [data-skin="landscapes"]) .nt-filters button[aria-pressed="true"]', css)
+        self.assertIn('html[data-skin="signal"] :is(', css)
     def test_original_screen_preserved(self):
         import hashlib
         const = constants(ROOT/'mcp/tools.py')

@@ -1,4 +1,4 @@
-/* Minimal inbox for Miguel's skins (Dark, Light, Landscapes). Colours come only from the shell's skin tokens. */
+/* Minimal inbox (every skin). Colours and shapes come only from the shell's skin tokens. */
 :root {
   /* One solid page: the skin's own opaque base colour, so a bright photo never shows through text or buttons. */
   --nt-page: var(--wz-base, var(--canvas));
@@ -28,7 +28,9 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .nt-toolbar { flex: none; position: relative; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 18px max(44px, env(safe-area-inset-bottom)); border-top: 1px solid var(--line); background: var(--nt-page); }
 .nt-filters { display: flex; border-radius: 99px; background: var(--nt-btn); border: 1px solid var(--line-2); padding: 3px; }
 .nt-filters button { min-width: 92px; padding: 0 18px; border-radius: 99px; color: var(--ink-2); font-weight: 550; }
-.nt-filters button[aria-pressed="true"] { background: var(--ink); color: var(--nt-page); font-weight: 700; }
+.nt-filters button[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); font-weight: 700; }
+/* Miguel's monochrome skins draw the selected filter in ink. */
+html:is([data-skin="obsidian"], [data-skin="obsidian-light"], [data-skin="landscapes"]) .nt-filters button[aria-pressed="true"] { background: var(--ink); color: var(--nt-page); }
 .nt-more { color: var(--ink); padding: 0 14px; border-radius: 99px; border: 1px solid var(--line-2); background: var(--nt-btn); font-weight: 550; }
 .nt-options { position: absolute; right: 18px; bottom: calc(100% + 4px); min-width: 180px; padding: 8px; border: 1px solid var(--nt-btn-line); border-radius: 16px; background: var(--nt-page); box-shadow: 0 10px 36px var(--line); z-index: 3; }
 .nt-options button { display: block; width: 100%; padding: 0 12px; text-align: left; border-radius: 8px; }
@@ -86,3 +88,6 @@ html.nt-detail .nt-ghost .wz-scroll { padding-bottom: 8px; }
 /* Vertical scrolling stays native; a sideways drag on the detail belongs to the strip. */
 html.nt-detail .wz-app, html.nt-detail .wz-scroll { touch-action: pan-y pinch-zoom; }
 html.nt-sliding { -webkit-user-select: none; user-select: none; }
+
+/* Signal draws square corners everywhere in the shell; the inbox follows (radii only, colours stay tokens). */
+html[data-skin="signal"] :is(.nt-filters, .nt-filters button, .nt-more, .nt-options, .nt-options button, #back, .btn-primary, .act, .thumb, #viewer-close, #body code) { border-radius: 2px; }
