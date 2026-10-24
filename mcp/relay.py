@@ -8,6 +8,10 @@
 # - dated outcomes are never merged (numbers and dates are kept), so each daily report is its own item;
 # - jobs listed in CRON_QUIET_JOBS (ids or names) never post a success (an app badge covers them); their
 #   failures still alert;
+# - the agent runtime's own self-check footer ("File-mutation verifier: ...") is never owner content: it is
+#   stripped, and a run that said [SILENT] stays silent whatever the runtime appended after it;
+# - CRON_FAILURES=off: an agent-side recovery lane owns failed runs (it repairs them and tells the owner only
+#   what it could not fix), so failures are not posted here; warning-sign alerts written for the owner still are;
 # - a post the server does not confirm is retried on the next pass; it never consumes the run.
 # The first pass on a box only looks back CRON_LOOKBACK_H hours, so installing never floods the inbox.
 import hashlib
@@ -20,6 +24,23 @@ CRON_EVERY = max(30, int(os.environ.get("CRON_EVERY_S", "300") or 300))
 CRON_LOOKBACK_H = float(os.environ.get("CRON_LOOKBACK_H", "24") or 24)
 CRON_QUIET = {x.strip().lower() for x in os.environ.get("CRON_QUIET_JOBS", "").split(",") if x.strip()}
 CRON_STATE = os.environ.get("CRON_STATE", os.path.join(os.path.dirname(STATE_FILE) or "/data", "cron-relay.json"))
+
+
+def _failures_setting():
+    """CRON_FAILURES from the app form, else a box-local /data/cron-relay-settings.json {"failures": "off"}."""
+    v = os.environ.get("CRON_FAILURES", "")
+    if not v.strip():
+        try:
+            with open(os.path.join(os.path.dirname(CRON_STATE), "cron-relay-settings.json")) as f:
+                v = str(json.load(f).get("failures", ""))
+        except (OSError, ValueError, AttributeError):
+            v = ""
+    return v.strip().lower() not in ("off", "0", "false", "no")
+
+
+CRON_FAILURES = _failures_setting()
+# The agent runtime appends this self-check to a turn's text; it is diagnostics for the agent, not a result.
+_RUNTIME_FOOTER = re.compile(r"\n?[ \t]*(\u26a0\ufe0f?[ \t]*)?File-mutation verifier:[\s\S]*")
 _EOL = r"[ \t]*(?=\n|\Z)"   # end of line without a dollar sign (compose would interpolate one)
 _relay_lock = threading.Lock()
 
@@ -57,9 +78,17 @@ def cron_summarize(text):
         if not body:
             parts = re.split(r"^---%s" % _EOL, text, maxsplit=1, flags=re.M)
             body = parts[1] if len(parts) > 1 else text.split(status, 1)[-1] if status else ""
-    body = body.strip()
-    if not body or body in ("[SILENT]", "SILENT"):
+    body = _RUNTIME_FOOTER.sub("", body).strip()
+    lines = [ln.strip() for ln in body.splitlines() if ln.strip()]
+    if not lines or any(x.upper().startswith(("[SILENT]",)) or x.upper() == "SILENT" for x in (lines[0], lines[-1])):
         return None
+    # A short all-clear heartbeat ("meter snapshot ok") is a silent run, unless the job says it failed.
+    if not failed and len(body) < 60 and re.search(r"\b(ok|healthy|nothing to report|no new activity)\b", body, re.I) and \
+            not re.search(r"\b(fail\w*|error\w*|warn\w*|full|down)\b", body, re.I):
+        return None
+    # A body that opens with a warning sign is an alert the owner needs, even when the job itself succeeded.
+    if body.startswith(("\u26a0", "\U0001f6a8")):
+        failed = True
     head = body[:240].lower()
     if re.search(r"\b(failed|failure|needs review|needs you|error|stale|not_started|action required)\b", head) and \
             not re.search(r"\b(no|0) (failures|errors)\b|all monitored checks passed", head):
@@ -137,20 +166,30 @@ def cron_relay_once(cron_dir=None, state_path=None, post=None, now=None):
                 done.add(key)
                 continue
             failed, body = s
+            if failed and not CRON_FAILURES and not body.startswith(("\u26a0", "\U0001f6a8")):
+                skipped += 1                       # the recovery lane owns it; the owner hears only its outcome
+                done.add(key)
+                continue
+            had_alert = job in alerts
             suppress, receipt = cron_failure_policy(job, body, failed, alerts, mt)
             if suppress:
                 skipped += 1
                 done.add(key)
                 continue
             name = names.get(job) or (re.search(r"^# Cron Job: (.+)", raw, re.M) or [0, job])[1]
+            recovered = False
             if not failed and (job.lower() in CRON_QUIET or str(name).strip().lower() in CRON_QUIET):
-                quiet_days.setdefault(fn[:10], key)
-                skipped += 1
-                done.add(key)
-                continue
+                if not had_alert:
+                    quiet_days.setdefault(fn[:10], key)
+                    skipped += 1
+                    done.add(key)
+                    continue
+                recovered = True                   # a quiet job's first success after a failure closes its thread
             when = time.strftime("%d %b %H:%M UTC", time.gmtime(mt))
+            warning = body.startswith(("\u26a0", "\U0001f6a8"))
+            prefix = "Recovered: " if recovered else "Failed: " if failed and not warning else ""
             try:
-                ok = post(("Failed: " if failed else "") + str(name), "%s\n\n%s" % (body, when),
+                ok = post(prefix + str(name), "%s\n\n%s" % (body, when),
                           4 if failed else 2, ["cron", "warning" if failed else "clock"])
             except OSError:
                 ok = False

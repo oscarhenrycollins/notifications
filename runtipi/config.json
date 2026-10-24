@@ -65,6 +65,14 @@
       "required": false,
       "placeholder": "Morning briefing",
       "hint": "Comma-separated job names or ids whose successes should not post (their failures still alert)."
+    },
+    {
+      "type": "text",
+      "label": "Post failed job runs (optional)",
+      "env_variable": "CRON_FAILURES",
+      "required": false,
+      "placeholder": "post",
+      "hint": "Set to off when your agent has its own recovery lane for failed jobs: it fixes them and tells you only what it could not fix, so raw failures stay out of the inbox."
     }
   ]
 }
