@@ -30,7 +30,10 @@
       button.type = 'button'; button.dataset.id = it.id;
       button.setAttribute('aria-label', titleOf(it) + (it.read ? '' : ', unread'));
       const dot = node('span', '', 'dot'); dot.setAttribute('aria-hidden', 'true');
-      button.append(dot, node('span', titleOf(it), 'title')); li.append(button); return li;
+      button.append(dot, node('span', titleOf(it), 'title'));
+      // A scheduled job's runs share one row; the count says how many are in it.
+      if (it.runs && it.runs.length > 1) { const n = node('span', String(it.runs.length), 'runs'); n.setAttribute('aria-label', it.runs.length + ' runs'); button.append(n); }
+      li.append(button); return li;
     }));
     el('empty').hidden = visible().length !== 0;
     el('empty').textContent = filter === 'unread' ? 'No unread notifications' : filter === 'flagged' ? 'No flagged notifications' : filter === 'archive' ? 'No archived notifications' : 'No notifications';
@@ -171,6 +174,34 @@
       out.push(p);
     }
     el('body').replaceChildren(...out);
+    if (selected && selected.details) {
+      const details = node('details'), summary = node('summary', 'Details'), raw = node('pre', selected.details);
+      raw.style.whiteSpace = 'pre-wrap'; raw.style.overflowWrap = 'anywhere';
+      details.append(summary, raw); el('body').append(details);
+    }
+  }
+  // When the job ran: the relay ends each result with its run stamp ("23 Oct 18:00 UTC"); the post time is the fallback.
+  const MONTHS = 'JanFebMarAprMayJunJulAugSepOctNovDec';
+  function runTime(r) {
+    const m = String(r.message || '').trim().match(/(\d{1,2}) (\w{3}) (\d{2}):(\d{2}) UTC(?![\s\S])/), mon = m ? MONTHS.indexOf(m[2]) / 3 : -1;
+    if (!m || mon < 0 || mon % 1) return r.time;
+    const y = new Date(r.time * 1000).getUTCFullYear(); let t = Date.UTC(y, mon, +m[1], +m[3], +m[4]) / 1000;
+    if (t > r.time + 86400) t = Date.UTC(y - 1, mon, +m[1], +m[3], +m[4]) / 1000;
+    return t;
+  }
+  // Earlier runs of a scheduled job: time and status, tap to read that run's result.
+  function paintRuns(it) {
+    const box = el('runs'), runs = (it.runs || []).slice(1);
+    box.hidden = !runs.length; if (!runs.length) { box.replaceChildren(); return; }
+    const list = node('ul');
+    for (const r of runs) {
+      const li = node('li'), d = node('details'), s = node('summary', null, r.read ? '' : 'unread');
+      const failed = /^Failed: /.test(r.title || '') || r.priority >= 4;
+      s.append(node('span', R.friendlyTime(runTime(r)), 'when'), node('span', failed ? 'Failed' : /^Recovered: /.test(r.title || '') ? 'Recovered' : 'Done', failed ? 'state bad' : 'state'));
+      const body = node('p', String(r.message || '').trim().replace(/\n+\d{1,2} \w{3} \d{2}:\d{2} UTC(?![\s\S])/, ''), 'run-body');
+      d.append(s, body); li.append(d); list.append(li);
+    }
+    box.replaceChildren(node('h3', 'Earlier runs'), list);
   }
   function openViewer(url, name) {
     const v = el('viewer'), img = el('viewer-img'); img.src = url; img.alt = name; v.hidden = false; el('viewer-close').focus();
@@ -196,12 +227,13 @@
   }
   function paintDetail() {
     const it = selected;
-    el('subject').textContent = titleOf(it);
+    el('subject').textContent = titleOf(it).replace(/^(Failed|Recovered): /, '');
     el('meta').textContent = [R.friendlyTime(it.time), it.flag ? 'Flagged' : '', it.archived ? 'Archived' : ''].filter(Boolean).join(' · ');
     // The primary button opens the link, so the body never shows it a second time: a sole inline copy is
     // removed, and when the body has other links too the copy is quieted.
     const parsed = R.parse(it.message, Number(it.time)), link = primaryLink(it, parsed);
     paintBody(link ? R.dropLink(parsed, link.href) : parsed, link ? link.href : '');
+    paintRuns(it);
     const primary = el('primary'), row = el('actions');
     if (link) {
       const a = node('a', null, 'btn-primary'); a.href = link.href; a.target = '_blank'; a.rel = 'noopener noreferrer';

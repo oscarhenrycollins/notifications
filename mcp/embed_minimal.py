@@ -13,7 +13,8 @@ gate = """(() => {
    if (wanted !== minimal) { const url = new URL(location.href); if (wanted) url.searchParams.set('layout','minimal'); else url.searchParams.delete('layout'); location.replace(url.href); }
  });
 })();"""
-html = (web/'index.html').read_text().replace('boot.js','minimal-boot.js').replace('wizard-ui.css','minimal-kit.css').replace('styles.css','minimal.css').replace('inbox.js','minimal.js').replace('render.js','minimal-render.js').replace('<script defer', '<script src="layout.js"></script><script defer')
+gate = (web/'layout.js').read_text()
+html = (web/'index.html').read_text()
 assets = {'minimal.js': ('text/javascript', (web/'inbox.js').read_text()), 'minimal-render.js': ('text/javascript', (web/'render.js').read_text()), 'minimal.css': ('text/css',(web/'styles.css').read_text()), 'minimal-kit.css': ('text/css',(web/'wizard-ui.css').read_text()), 'minimal-boot.js': ('text/javascript',(web/'boot.js').read_text()), 'layout.js': ('text/javascript',gate)}
 # Python literals are safe in the inlined front (compose forbids dollar characters).
 revision = hashlib.sha256(json.dumps({'html': html, 'assets': assets}, sort_keys=True).encode()).hexdigest()

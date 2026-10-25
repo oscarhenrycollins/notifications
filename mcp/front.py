@@ -77,6 +77,11 @@ def up_addr():
 def http(method, path, body=None, headers=None, timeout=60):
     url = "http://%s:%d%s" % (up_addr(), UP_PORT, path)
     req = urllib.request.Request(url, data=body, method=method, headers=headers or {})
+    password_file = os.environ.get("UPSTREAM_PASSWORD_FILE")
+    if method in ("POST", "PUT") and password_file:
+        with open(password_file) as f:
+            password = f.read().strip()
+        req.add_header("Authorization", "Basic " + base64.b64encode(("readable:" + password).encode()).decode())
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, r.read()
 
@@ -189,6 +194,9 @@ async def handle(reader, writer):
     for prefix, fn in ROUTES.items():
         if path == prefix.rstrip("/") or path.startswith(prefix):
             return await serve_route(reader, writer, fn, parts[0], parts[1], rest)
+    # ntfy publishes on POST/PUT and GET /topic/publish. Never proxy these raw.
+    if parts[0] in ("POST", "PUT") or (parts[0] == "GET" and path.endswith("/publish")):
+        return await serve_route(reader, writer, publish_route, parts[0], parts[1], rest)
     if not UP_HOST:
         return await respond(writer, 404, {"error": "not found"})
     try:
@@ -207,6 +215,6 @@ async def handle(reader, writer):
 
 
 async def main():
-    srv = await asyncio.start_server(handle, "0.0.0.0", PORT, limit=MAX_HEAD)
+    srv = await asyncio.start_server(handle, os.environ.get("FRONT_BIND", "0.0.0.0"), PORT, limit=MAX_HEAD)
     async with srv:
         await srv.serve_forever()

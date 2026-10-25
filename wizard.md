@@ -19,6 +19,14 @@ mcp:
   port: 8080
   transport: streamable-http
 skill: SKILL.md
+requires:
+  models:
+    readable:
+      tier: fast
+      tested_on: claude-haiku-4-5
+      swap: ask
+      abilities: [text, streaming]
+      purpose: Turn incoming updates into plain English and notify only when the owner must act
 system: true
 provides:
 - notifications

@@ -21,8 +21,7 @@ def _clean(text, limit):
     return text[:limit]
 
 
-@tool("notify", "Send the owner a notification on their phone and in the Notifications app. Use it for things "
-      "they asked to be told about, finished long jobs, or problems that need them. Keep it short and plain.",
+@tool("notify", "Send an update through the app's AI editor. Only concrete owner actions push; useful FYI stays in the inbox and routine noise is suppressed. Original details are retained.",
       {"message": {"type": "string", "description": "What happened, in one or two sentences"},
        "title": {"type": "string", "description": "Short title, e.g. 'Video ready' (optional)"},
        "priority": {"type": "string", "enum": list(PRIORITIES), "description": "default unless it is urgent"},
@@ -31,7 +30,7 @@ def _clean(text, limit):
       ["message"])
 def notify(message, title="", priority="default", link="", tags=""):
     _box_only()
-    body = _clean(message, 4000)
+    body = str(message or "").strip()
     if not body:
         raise ValueError("say what to tell the owner")
     payload = {"topic": TOPIC, "message": body, "priority": PRIORITIES.get(str(priority or "default"), 3)}
@@ -44,9 +43,7 @@ def notify(message, title="", priority="default", link="", tags=""):
         payload["click"] = url[:2000]
     if tags:
         payload["tags"] = [t for t in (_clean(x, 40) for x in str(tags).split(",")) if t][:5]
-    status, raw = http("POST", "/", json.dumps(payload).encode(), {"Content-Type": "application/json"}, timeout=20)
-    sent = json.loads(raw or b"{}")
-    return {"sent": True, "id": sent.get("id"), "topic": TOPIC, "time": sent.get("time")}
+    return rewrite_and_deliver(payload)
 
 
 @tool("notifications_recent", "Read the notifications sent to the owner recently, newest last.",
@@ -77,8 +74,13 @@ def notifications_recent(since="24h", limit=20):
 # The page and its API live on this front at /notifications/ (the Wizard shell opens it at the same path on its own
 # origin). ntfy keeps the messages (30 days); this keeps only the owner's marks, in a small JSON file.
 import threading
+import hashlib
+import re
 
 INBOX = "/notifications/"
+# The card inbox (tap a row, it opens as a full card with actions) is the default on every skin;
+# NOTIF_LAYOUT=classic keeps the original screen for skins outside Miguel's set.
+LAYOUT = os.environ.get("NOTIF_LAYOUT", "").strip().lower() or "cards"
 STATE_FILE = os.environ.get("INBOX_STATE", "/data/inbox.json")
 TOPICS = [t for t in os.environ.get("INBOX_TOPICS", TOPIC).split(",") if t.strip()]
 _lock = threading.Lock()
@@ -111,33 +113,129 @@ def _messages(since="all"):
                 continue
             if m.get("event") == "message":
                 out.append(m)
+    details, thread_titles = {}, {}
+    quiet, details = readable_messages()
+    with readable_db() as db:
+        for row in db.execute("SELECT raw,sent FROM updates WHERE sent != ''"):
+            sent, raw = json.loads(row["sent"]), json.loads(row["raw"])
+            if "cron" in (raw.get("tags") or []):
+                thread_titles[sent["id"]] = raw.get("title", "")
+    out.extend(quiet)
+    for item in out:
+        if item["id"] in details:
+            item["details"] = details[item["id"]]
+        if item["id"] in thread_titles:
+            item["thread_title"] = thread_titles[item["id"]]
     out.sort(key=lambda m: m.get("time", 0), reverse=True)
     return out
 
 
-def inbox_items(view="inbox", limit=200):
+def _thread_key(it):
+    """Scheduled-job runs of one job share a thread (the job name); agent notes stay one row each."""
+    if it["source"] != "cron":
+        return ""
+    return " ".join(re.sub(r"^(Failed|Recovered): ", "", it.get("thread_title", it["title"]) or "").split()).lower()
+
+
+def _thread_id(key):
+    return "t-" + hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+_STAMP = re.compile(r"(\d{1,2}) (\w{3}) (\d{2}):(\d{2}) UTC\s*\Z")
+_MONTHS = "JanFebMarAprMayJunJulAugSepOctNovDec"
+
+
+def _run_time(it):
+    """When the job ran: the relay ends each result with its run stamp; the post time is the fallback (a backlog
+    relayed in one pass has one post time)."""
+    m = _STAMP.search(it["message"] or "")
+    if not m or m.group(2) not in _MONTHS or _MONTHS.index(m.group(2)) % 3:
+        return it["time"]
+    import calendar
+    y = time.gmtime(it["time"]).tm_year
+    t = calendar.timegm((y, _MONTHS.index(m.group(2)) // 3 + 1, int(m.group(1)), int(m.group(3)), int(m.group(4)), 0))
+    return calendar.timegm((y - 1,) + time.gmtime(t)[1:6]) if t > it["time"] + 86400 else t
+
+
+def _threads(items):
+    """Collapse each job's runs into one row. The row is the newest run (title, body, link) and carries every run
+    in `runs`; its id is a thread id that inbox_mark fans out to the member ids. Marks stay per run, so a new run
+    after Mark read or Archive is unread again and re-lights the row."""
+    out, groups = [], {}
+    for it in items:                                   # items arrive newest first
+        key = _thread_key(it)
+        if not key:
+            out.append(it)
+            continue
+        g = groups.get(key)
+        if g is None:
+            g = groups[key] = dict(it, id=_thread_id(key), runs=[])
+            out.append(g)
+        run = {k: it[k] for k in ("id", "time", "title", "message", "priority", "read", "flag", "archived")}
+        run["run_time"] = _run_time(it)
+        g["runs"].append(run)
+    for key, g in groups.items():
+        g["runs"].sort(key=lambda r: -r["run_time"])
+        head = next(i for i in items if i["id"] == g["runs"][0]["id"])
+        g.update({k: head[k] for k in ("time", "title", "message", "link", "tags")})
+        runs = g["runs"]
+        unread = [r for r in runs if not r["read"]]
+        g["read"] = not unread
+        g["flag"] = any(r["flag"] for r in runs)
+        g["archived"] = all(r["archived"] for r in runs)
+        g["priority"] = max([r["priority"] for r in unread] or [runs[0]["priority"]])
+        g["unread_runs"] = len(unread)
+    # Newest first, and nothing else: opening or marking a row never moves it (the red dot shows failures).
+    out.sort(key=lambda i: -i["time"])
+    return out
+
+
+def inbox_items(view="inbox", limit=200, threads=True):
     st = _load_state()
     items = []
     for m in _messages():
         s = st.get(m["id"], {})
         tags = m.get("tags") or []
-        it = {"id": m["id"], "time": m.get("time", 0), "title": m.get("title", ""), "message": m.get("message", ""),
+        it = {"id": m["id"], "time": m.get("time", 0), "title": m.get("title", ""), "message": m.get("message", ""), "details": m.get("details", ""), "thread_title": m.get("thread_title", m.get("title", "")),
               "priority": m.get("priority", 3), "link": m.get("click", ""), "tags": tags,
               "source": "cron" if "cron" in tags else "agent",
               "read": bool(s.get("read")), "flag": bool(s.get("flag")), "archived": bool(s.get("archived"))}
         items.append(it)
-    counts = {"unread": sum(1 for i in items if not i["read"] and not i["archived"]),
-              "needs": sum(1 for i in items if not i["read"] and not i["archived"] and i["priority"] >= 4),
-              "flagged": sum(1 for i in items if i["flag"] and not i["archived"])}
+    group = _threads if threads else (lambda xs: xs)
+    # Counts come from the same rows the inbox shows (one per job thread), so badge and list never disagree.
+    live = group([i for i in items if not i["archived"]])
+    counts = {"unread": sum(1 for i in live if not i["read"]),
+              "needs": sum(1 for i in live if not i["read"] and i["priority"] >= 4),
+              "flagged": sum(1 for i in live if i["flag"])}
+    # Filter runs first, then group, so an archived thread comes back as a fresh row when a new run lands.
     if view == "flagged":
-        items = [i for i in items if i["flag"] and not i["archived"]]
+        rows = group([i for i in items if i["flag"] and not i["archived"]])
     elif view == "archive":
-        items = [i for i in items if i["archived"]]
+        rows = group([i for i in items if i["archived"]])
     elif view == "all":
-        pass
+        rows = group(items)
     else:
-        items = [i for i in items if not i["archived"]]
-    return {"view": view, "counts": counts, "items": items[:max(1, min(int(limit or 200), 500))]}
+        rows = live
+    return {"view": view, "counts": counts, "items": rows[:max(1, min(int(limit or 200), 500))]}
+
+
+def _expand_ids(ids, marks):
+    """Thread ids fan out to their runs. Mark unread on a thread re-opens only its newest run."""
+    if not any(i.startswith("t-") for i in ids):
+        return ids
+    want = {i for i in ids if i.startswith("t-")}
+    members = {}
+    for m in _messages():                              # newest first
+        tags = m.get("tags") or []
+        it = {"source": "cron" if "cron" in tags else "agent", "title": m.get("title", ""), "thread_title": m.get("thread_title", m.get("title", ""))}
+        key = _thread_key(it)
+        if key and _thread_id(key) in want:
+            members.setdefault(_thread_id(key), []).append(m["id"])
+    out = [i for i in ids if not i.startswith("t-")]
+    only_newest = set(marks) == {"read"} and marks["read"] is False
+    for t, run_ids in members.items():
+        out += run_ids[:1] if only_newest else run_ids
+    return out
 
 
 def inbox_mark(ids, **marks):
@@ -145,6 +243,7 @@ def inbox_mark(ids, **marks):
     keep = {k: bool(v) for k, v in marks.items() if k in ("read", "flag", "archived") and v is not None}
     if not ids or not keep:
         raise ValueError("give ids and at least one of read, flag, archived")
+    ids = _expand_ids(ids, keep)[:2000]
     with _lock:
         st = _load_state()
         for i in ids:
@@ -171,6 +270,9 @@ def notifications_inbox(view="inbox", unread_only=False, limit=30):
     for i in items:
         i["time"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(i["time"]))
         i["message"] = i["message"][:600]
+        if "runs" in i:
+            i["runs"] = [{"id": r["id"], "time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(r["time"])),
+                          "failed": r["priority"] >= 4, "read": r["read"]} for r in i["runs"][:20]]
     return {"counts": d["counts"], "items": items}
 
 
@@ -244,7 +346,7 @@ def inbox_route(method, path, query, headers, body):
     sub = path[len(INBOX):] if path.startswith(INBOX) else ""
     q = urllib.parse.parse_qs(query)
     if method == "GET" and sub in ("", "index.html"):
-        html = MINIMAL_HTML if (q.get("layout") or [""])[0] == "minimal" else PAGE_HTML.replace('<script defer', '<script src="layout.js"></script><script defer')
+        html = MINIMAL_HTML if (q.get("layout") or [""])[0] == "minimal" or LAYOUT == "cards" else PAGE_HTML.replace('<script defer', '<script src="layout.js"></script><script defer')
         return 200, "text/html; charset=utf-8", html.encode()
     if method == "GET" and sub in MINIMAL_ASSETS:
         mime, content = MINIMAL_ASSETS[sub]
@@ -383,6 +485,8 @@ PAGE_JS = r"""'use strict';
     const tm = node('time', '', ago(it.time)); tm.dateTime = new Date(it.time * 1000).toISOString(); top.appendChild(tm);
     m.appendChild(top); m.appendChild(node('p', 'nt-msg', plain(it.message))); b.appendChild(m); li.appendChild(b);
     const acts = node('div', 'nt-acts');
+    // Raw input is escaped by textContent and stays collapsed until requested.
+    if (it.details && open === it.id) { const d = node('details'); const p = node('pre', '', it.details); p.style.whiteSpace = 'pre-wrap'; p.style.overflowWrap = 'anywhere'; d.append(node('summary', '', 'Details'), p); li.appendChild(d); }
     const btn = (act, label, on) => { const x = node('button', on ? 'on' : '', label); x.type = 'button'; x.dataset.act = act; acts.appendChild(x); };
     btn('flag', it.flag ? '\u2691 Flagged' : '\u2690 Flag', it.flag);
     btn('read', it.read ? 'Mark unread' : 'Mark read');
