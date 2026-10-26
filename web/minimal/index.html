@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="color-scheme" content="dark light">
 <title>Notifications</title>
-<script src="boot.js"></script><link rel="stylesheet" href="wizard-ui.css"><link rel="stylesheet" href="styles.css">
-<script src="/wizard-os-home/core/app-client.js"></script><script defer src="render.js"></script><script defer src="inbox.js"></script>
+<script src="minimal-boot.js"></script><link rel="stylesheet" href="minimal-kit.css"><link rel="stylesheet" href="minimal.css">
+<script src="/wizard-os-home/core/app-client.js"></script><script src="layout.js"></script><script defer src="minimal-render.js"></script><script src="layout.js"></script><script defer src="minimal.js"></script>
 </head>
 <body><div class="wz-app">
 <header class="wz-head"><h1>Notifications</h1></header>
 <main class="wz-scroll" id="scroll" tabindex="-1">
 <section id="overview" aria-label="Notification subjects"><ul class="wz-list" id="list"></ul><p class="wz-empty" id="empty" hidden>No unread notifications</p></section>
-<section id="detail" aria-labelledby="subject" hidden><button type="button" id="back">← Back</button><h2 id="subject" tabindex="-1"></h2><p id="meta"></p><div id="body"></div><div id="primary"></div><div class="actions" id="actions" role="group" aria-label="Notification actions"></div></section>
+<section id="detail" aria-labelledby="subject" hidden><button type="button" id="back">← Back</button><h2 id="subject" tabindex="-1"></h2><p id="meta"></p><div id="body"></div><section id="runs" class="runs" hidden aria-label="Earlier runs"></section><div id="primary"></div><div class="actions" id="actions" role="group" aria-label="Notification actions"></div></section>
 </main>
 <p class="wz-status" id="status" role="status" aria-live="polite"></p>
 <footer id="toolbar" class="nt-toolbar"><nav aria-label="Notification filter" id="filters" class="nt-filters"><button type="button" data-filter="unread" aria-pressed="true">Unread</button><button type="button" data-filter="all" aria-pressed="false">All</button></nav><button type="button" id="more" class="nt-more" aria-expanded="false" aria-controls="options">More</button><div id="options" class="nt-options" hidden><button type="button" data-filter="flagged">Flagged</button><button type="button" data-filter="archive">Archive</button><button type="button" id="allread">Mark all read</button><button type="button" id="refresh">Refresh</button></div></footer>

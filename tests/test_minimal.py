@@ -23,6 +23,11 @@ class MinimalInboxTests(unittest.TestCase):
         import hashlib
         const = constants(ROOT/'mcp/tools.py')
         baseline = json.loads((ROOT/'tests/original-screen-hashes.json').read_text())
+        # The only intentional change to cards is the owner's collapsed raw Details.
+        lines = const['PAGE_JS'].splitlines(keepends=True)
+        added = [line for line in lines if '// Raw input is escaped' in line or 'if (it.details && open === it.id)' in line]
+        self.assertEqual(len(added), 2)
+        const['PAGE_JS'] = ''.join(line for line in lines if line not in added)
         self.assertEqual({k:hashlib.sha256(const[k].encode()).hexdigest() for k in baseline},baseline)
     def test_chat_is_supported_unsent_not_url_or_send(self):
         source = (ROOT/'web/minimal/inbox.js').read_text()
