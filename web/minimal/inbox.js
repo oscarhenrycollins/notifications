@@ -181,6 +181,8 @@
     const b = node('button', null, cls || 'act'); b.type = 'button'; b.disabled = busy; b.onclick = handler;
     if (iconName) b.append(icon(iconName)); b.append(node('span', label)); return b;
   }
+  /* Reply needs a Wizard that can open a Chats draft; on an older Wizard it is simply not offered. */
+  const canReply = () => typeof window.WizardApp?.nav?.openContextDraft === 'function';
   function startChat(it) {
     try {
       const receipt = window.WizardApp.nav.openContextDraft({id: String(it.id), title: titleOf(it), message: String(it.message || '')});
@@ -206,9 +208,10 @@
     if (link) {
       const a = node('a', null, 'btn-primary'); a.href = link.href; a.target = '_blank'; a.rel = 'noopener noreferrer';
       a.append(node('span', /^open\b/i.test(link.label) ? link.label : 'Open ' + link.label)); primary.replaceChildren(a);
-    } else primary.replaceChildren(action('Reply', 'chat', () => startChat(it), 'btn-primary'));
+    } else if (canReply()) primary.replaceChildren(action('Reply', 'chat', () => startChat(it), 'btn-primary'));
+    else primary.replaceChildren();
     const acts = [];
-    if (link) acts.push(action('Reply', 'chat', () => startChat(it)));
+    if (link && canReply()) acts.push(action('Reply', 'chat', () => startChat(it)));
     // Mark read / unread is done with this one: back to the list, like Send in Chats returns to the session list.
     acts.push(action(it.read ? 'Mark unread' : 'Mark read', it.read ? 'unread' : 'read', async () => {
       const ok = await mark([it.id], {read: !it.read});

@@ -5,7 +5,7 @@ name: Notifications
 type: service
 category: system
 tags: [productivity]
-version: 2.29.0-wizard10
+version: 2.29.0-wizard11
 summary: Your Wizard's own notification server. The agent tells you when something is done or needs you.
 icon: icon.png
 license: Apache-2.0
