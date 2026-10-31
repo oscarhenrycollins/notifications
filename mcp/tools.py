@@ -111,6 +111,10 @@ def _messages(since="all"):
                 continue
             if m.get("event") == "message":
                 out.append(m)
+            elif m.get("error") or m.get("http"):
+                # ntfy can stop a poll part-way with HTTP 200 and an error line (e.g. its daily bandwidth limit).
+                # A cut-off list is not the inbox: fail loudly instead of returning half of it.
+                raise RuntimeError("ntfy stopped the %s list part-way: %s" % (t.strip(), m.get("error") or m.get("http")))
     out.sort(key=lambda m: m.get("time", 0), reverse=True)
     return out
 
@@ -140,6 +144,32 @@ def inbox_items(view="inbox", limit=200):
     return {"view": view, "counts": counts, "items": items[:max(1, min(int(limit or 200), 500))]}
 
 
+MARK_GONE_GRACE = 3 * 86400   # a notification mark is forgotten only after ntfy has stopped listing it for 3 days
+
+
+def _prune_marks(st, now):
+    """Forget marks for messages ntfy has expired. Never on a partial or failed read: one bad poll must not wipe
+    the owner's read/archived state (that brought weeks of old items back as unread)."""
+    try:
+        live = {m["id"] for m in _messages()}
+    except Exception:
+        return st
+    out = {}
+    for k, v in st.items():
+        if k in live:
+            v.pop("gone", None)
+            out[k] = v
+        else:
+            try:
+                gone = float(v.get("gone") or now)
+            except (TypeError, ValueError):
+                gone = now
+            if now - gone < MARK_GONE_GRACE:
+                v["gone"] = gone
+                out[k] = v
+    return out
+
+
 def inbox_mark(ids, **marks):
     ids = [str(i)[:40] for i in (ids or [])][:500]
     keep = {k: bool(v) for k, v in marks.items() if k in ("read", "flag", "archived") and v is not None}
@@ -153,8 +183,7 @@ def inbox_mark(ids, **marks):
             if keep.get("archived"):
                 cur["read"] = True
             st[i] = cur
-        live = {m["id"] for m in _messages()}   # forget marks for messages ntfy has expired
-        st = {k: v for k, v in st.items() if k in live}
+        st = _prune_marks(st, time.time())
         _save_state(st)
     return {"ok": True, "changed": len(ids)}
 
