@@ -398,11 +398,21 @@ services:
           return {"view": view, "counts": counts, "items": items[:max(1, min(int(limit or 200), 500))]}
 
 
-      def inbox_mark(ids, **marks):
-          ids = [str(i)[:40] for i in (ids or [])][:500]
+      APP_ID = "a-"          # app inbox feed items (Wizard OS inbox feed v1): "a-<app id>-<key hash>", kept by the shell
+      APP_KEEP = 60 * 86400   # an app item's mark outlives ntfy's 30 days; dropped 60 days after the activity it covers
+
+
+      def _app_id(i):
+          return isinstance(i, str) and i.startswith(APP_ID) and 3 < len(i) <= 128 and all(c.isalnum() or c in "-_" for c in i)
+
+
+      def inbox_mark(ids, at=None, **marks):
+          ids = [str(i)[:128] if _app_id(str(i)) else str(i)[:40] for i in (ids or [])][:500]
           keep = {k: bool(v) for k, v in marks.items() if k in ("read", "flag", "archived") and v is not None}
           if not ids or not keep:
               raise ValueError("give ids and at least one of read, flag, archived")
+          at = at if isinstance(at, dict) else {}
+          now = time.time()
           with _lock:
               st = _load_state()
               for i in ids:
@@ -410,11 +420,23 @@ services:
                   cur.update(keep)
                   if keep.get("archived"):
                       cur["read"] = True
+                  if _app_id(i):
+                      # The mark covers the item as it was (its latest activity): newer activity in the app brings it back.
+                      try:
+                          cur["at"] = max(0, min(float(at.get(i, now)), now + 60))
+                      except (TypeError, ValueError):
+                          cur["at"] = now
                   st[i] = cur
               live = {m["id"] for m in _messages()}   # forget marks for messages ntfy has expired
-              st = {k: v for k, v in st.items() if k in live}
+              st = {k: v for k, v in st.items() if k in live or (_app_id(k) and now - float(v.get("at") or 0) < APP_KEEP)}
               _save_state(st)
           return {"ok": True, "changed": len(ids)}
+
+
+      def app_marks():
+          st = _load_state()
+          return {"marks": {k: {"read": bool(v.get("read")), "archived": bool(v.get("archived")), "at": float(v.get("at") or 0)}
+                            for k, v in st.items() if _app_id(k)}}
 
 
       @tool("notifications_inbox", "Read the owner's notification inbox (agent notes and scheduled-job results) with what they "
@@ -520,7 +542,9 @@ services:
               if not headers.get("content-type", "").startswith("application/json"):
                   return _json(415, {"error": "send application/json"})
               d = json.loads(body or b"{}")
-              return _json(200, inbox_mark(d.get("ids"), read=d.get("read"), flag=d.get("flag"), archived=d.get("archived")))
+              return _json(200, inbox_mark(d.get("ids"), at=d.get("at"), read=d.get("read"), flag=d.get("flag"), archived=d.get("archived")))
+          if method == "GET" and sub == "api/marks":
+              return _json(200, app_marks())
           if method == "GET" and sub.startswith("media/"):
               # /notifications/media/<absolute path>: the path keeps its image extension so the shell's viewer opens it.
               return media_file("/" + urllib.parse.unquote(sub[len("media/"):]))
