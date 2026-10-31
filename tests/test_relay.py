@@ -120,6 +120,82 @@ class RelayTests(unittest.TestCase):
         Path(self.state).write_text(json.dumps({"since": self.t0 - 10, "done": ["job1/1.md"], "failure_alerts": {}}))
         self.assertEqual(self.run_once()["sent"], 0)
 
+    # ---- failures go to the agent's responder ----
+    def responder_box(self):
+        (self.cron / "jobs.json").write_text(json.dumps({"jobs": [
+            {"id": "job1", "name": "Backup check"}, {"id": "morning", "name": "Morning briefing"},
+            {"id": "resp", "name": "Failure responder", "enabled": True}]}))
+
+    def openf(self):
+        p = self.root / "cron-failures.json"
+        return json.loads(p.read_text()) if p.exists() else {}
+
+    def test_without_responder_failures_still_post(self):
+        self.add("job1", "1.md", run_md(status="error", error="disk full"), self.t0)
+        self.run_once(); self.assertEqual(self.posts[0][0], "Failed: Backup check")
+        self.assertFalse((self.root / "cron-failures.json").exists())
+
+    def test_with_responder_failures_are_queued_not_posted(self):
+        self.responder_box()
+        self.add("job1", "1.md", run_md(status="error", error="disk full"), self.t0)
+        self.add("job1", "2.md", run_md(response="Standby has not synced for 8 hours (last error: low disk)"), self.t0 + 60)
+        self.add("job1", "3.md", run_md(response="Failed again: standby 10 hours"), self.t0 + 120)
+        self.run_once()
+        self.assertEqual(self.posts, [])
+        o = self.openf()["job1"]; self.assertEqual(o["runs"], 3); self.assertIn("10 hours", o["body"])
+        self.assertEqual(o["first_seen"], self.t0)
+
+    def test_success_closes_the_open_failure_and_still_posts_success(self):
+        self.responder_box()
+        self.add("job1", "1.md", run_md(status="error", error="disk full"), self.t0)
+        self.run_once(); self.assertIn("job1", self.openf())
+        self.add("job1", "2.md", run_md(response="All 3 backups fresh."), self.t0 + 60)
+        self.run_once(now=self.t0 + 200)
+        self.assertNotIn("job1", self.openf()); self.assertEqual([p[0] for p in self.posts], ["Backup check"])
+
+    def test_silent_success_closes_too(self):
+        self.responder_box()
+        self.add("job1", "1.md", run_md(status="error", error="disk full"), self.t0)
+        self.add("job1", "2.md", run_md(response="[SILENT]"), self.t0 + 60)
+        self.run_once(); self.assertEqual(self.openf(), {}); self.assertEqual(self.posts, [])
+
+    def test_responder_output_and_failures_always_post(self):
+        self.responder_box()
+        self.add("resp", "1.md", run_md(response="Needs you: add Codex credits. Failed to fix."), self.t0)
+        self.add("resp", "2.md", run_md(status="error", error="provider down"), self.t0 + 60)
+        self.run_once()
+        self.assertEqual([(p[0], p[2]) for p in self.posts], [("Failure responder", 4), ("Failed: Failure responder", 4)])
+        self.assertEqual(self.openf(), {})
+
+    def test_escalates_once_after_a_day_unless_acknowledged(self):
+        self.responder_box()
+        t = time.time() - 30 * 3600
+        self.add("job1", "1.md", run_md(status="error", error="disk full"), t)
+        self.run_once(now=t + 3600); self.assertEqual(self.posts, [])
+        self.run_once(now=t + 25 * 3600)
+        self.assertEqual(len(self.posts), 1); self.assertTrue(self.posts[0][0].startswith("Still failing: Backup check"))
+        self.run_once(now=t + 50 * 3600); self.assertEqual(len(self.posts), 1)   # once per episode
+
+    def test_acknowledged_failure_never_escalates(self):
+        self.responder_box()
+        t = time.time() - 30 * 3600
+        self.add("job1", "1.md", run_md(status="error", error="disk full"), t)
+        self.run_once(now=t + 3600)
+        (self.root / "cron-failures-ack.json").write_text(json.dumps({"job1": t}))
+        self.run_once(now=t + 25 * 3600); self.assertEqual(self.posts, [])
+
+    def test_owner_mode_overrides_responder(self):
+        self.responder_box(); ns = load({"CRON_FAILURES": "owner"})
+        self.add("job1", "1.md", run_md(status="error", error="disk full"), self.t0)
+        ns["cron_relay_once"](str(self.cron), self.state, self.post, time.time())
+        self.assertEqual(self.posts[0][0], "Failed: Backup check")
+
+    def test_paused_responder_means_owner_gets_failures(self):
+        (self.cron / "jobs.json").write_text(json.dumps({"jobs": [{"id": "job1", "name": "Backup check"},
+                                                                  {"id": "resp", "name": "Failure responder", "enabled": False}]}))
+        self.add("job1", "1.md", run_md(status="error", error="disk full"), self.t0)
+        self.run_once(); self.assertEqual(self.posts[0][0], "Failed: Backup check")
+
     def test_compose_is_generated_and_has_no_dollar_in_front(self):
         self.assertNotIn("$", (ROOT / "mcp" / "relay.py").read_text())
 
