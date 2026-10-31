@@ -76,6 +76,7 @@ def notifications_recent(since="24h", limit=20):
 # ---- Inbox: the owner's view of everything sent here, with read / flag / archive ----
 # The page and its API live on this front at /notifications/ (the Wizard shell opens it at the same path on its own
 # origin). ntfy keeps the messages (30 days); this keeps only the owner's marks, in a small JSON file.
+import tempfile
 import threading
 
 INBOX = "/notifications/"
@@ -179,6 +180,69 @@ def app_marks():
     st = _load_state()
     return {"marks": {k: {"read": bool(v.get("read")), "archived": bool(v.get("archived")), "at": float(v.get("at") or 0)}
                       for k, v in st.items() if _app_id(k)}}
+
+
+# ---- Inbox sources: per app, whether its "needs you" items show in the Chats inbox (and, later, on the phone) ----
+# One small JSON file beside the marks (never inside inbox.json: marks pruning would drop it). An app that is not
+# listed shows in Chats (chats: true). "phone" is reserved for phone notifications; nothing reads it yet.
+SOURCES_FILE = os.environ.get("INBOX_SOURCES", os.path.join(os.path.dirname(STATE_FILE) or ".", "sources.json"))
+SOURCES_MAX_APPS = 200
+SOURCES_MAX_BODY = 4096
+_SOURCE_FLAGS = ("chats", "phone")
+
+
+def _source_app(a):
+    return isinstance(a, str) and 0 < len(a) <= 64 and a[0].isalnum() and all(c.islower() or c.isdigit() or c == "-" for c in a)
+
+
+def _clean_sources(d):
+    out = {}
+    if isinstance(d, dict):
+        for app, v in d.items():
+            if _source_app(app) and isinstance(v, dict):
+                out[app] = {k: bool(v.get(k, True)) for k in _SOURCE_FLAGS}
+            if len(out) >= SOURCES_MAX_APPS:
+                break
+    return out
+
+
+def inbox_sources():
+    try:
+        with open(SOURCES_FILE) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        d = {}
+    return {"sources": _clean_sources(d.get("sources") if isinstance(d, dict) else None)}
+
+
+def set_inbox_source(app, chats=None, phone=None):
+    if not _source_app(app):
+        raise ValueError("give an app id")
+    patch = {k: v for k, v in (("chats", chats), ("phone", phone)) if v is not None}
+    if not patch or any(not isinstance(v, bool) for v in patch.values()):
+        raise ValueError("give chats and/or phone as true or false")
+    with _lock:
+        cur = inbox_sources()["sources"]
+        if app not in cur and len(cur) >= SOURCES_MAX_APPS:
+            raise ValueError("too many apps")
+        cur[app] = {**{k: True for k in _SOURCE_FLAGS}, **cur.get(app, {}), **patch}
+        # Atomic: a temp file in the same folder, flushed to disk, then renamed over the old one.
+        folder = os.path.dirname(SOURCES_FILE) or "."
+        fd, tmp = tempfile.mkstemp(prefix=".sources-", suffix=".tmp", dir=folder)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"sources": cur}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.chmod(tmp, 0o666)
+            os.replace(tmp, SOURCES_FILE)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    return {"ok": True, "sources": cur}
 
 
 @tool("notifications_inbox", "Read the owner's notification inbox (agent notes and scheduled-job results) with what they "
@@ -287,6 +351,24 @@ def inbox_route(method, path, query, headers, body):
         return _json(200, inbox_mark(d.get("ids"), at=d.get("at"), read=d.get("read"), flag=d.get("flag"), archived=d.get("archived")))
     if method == "GET" and sub == "api/marks":
         return _json(200, app_marks())
+    if method == "GET" and sub == "api/sources":
+        return _json(200, inbox_sources())
+    if method == "POST" and sub == "api/sources":
+        # JSON only and small: { "app": "<id>", "chats": true|false, "phone": true|false }.
+        if not headers.get("content-type", "").startswith("application/json"):
+            return _json(415, {"error": "send application/json"})
+        if len(body or b"") > SOURCES_MAX_BODY:
+            return _json(413, {"error": "request too large"})
+        try:
+            d = json.loads(body or b"{}")
+        except ValueError:
+            return _json(400, {"error": "bad json"})
+        if not isinstance(d, dict):
+            return _json(400, {"error": "send an object"})
+        try:
+            return _json(200, set_inbox_source(d.get("app"), chats=d.get("chats"), phone=d.get("phone")))
+        except ValueError as e:
+            return _json(400, {"error": str(e)})
     if method == "GET" and sub.startswith("media/"):
         # /notifications/media/<absolute path>: the path keeps its image extension so the shell's viewer opens it.
         return media_file("/" + urllib.parse.unquote(sub[len("media/"):]))
