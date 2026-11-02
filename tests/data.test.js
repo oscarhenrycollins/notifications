@@ -9,7 +9,7 @@ const vm = require('node:vm');
 const crypto = require('node:crypto');
 const SRC = fs.readFileSync(path.join(__dirname, '../web/minimal/data.js'), 'utf8');
 
-function boot({ opaque, call, status, ready = true }) {
+function boot({ opaque, call, status, media, ready = true }) {
   const calls = [], fetches = [], posts = [], listeners = {};
   const parent = { postMessage: (...a) => posts.push(a) };
   const self = { origin: opaque ? 'null' : 'https://wizard.example' };
@@ -21,7 +21,7 @@ function boot({ opaque, call, status, ready = true }) {
     addEventListener: (t, fn) => { listeners[t] = fn; }, setTimeout, clearTimeout, Object, Array, Number, Error, Promise, JSON, Uint8Array,
   };
   win.WizBoundaryClient = { ready };
-  win.WizardApp = { data: {
+  win.WizardApp = { media: { open: async req => { calls.push(['media', req]); return media ? media(req) : { kind: 'ticket', url: 'http://content.example:9/t/' + 'x'.repeat(43) }; } }, data: {
     call: async req => { calls.push(['call', req]); return call ? call(req) : { ok: true }; },
     status: async req => { calls.push(['status', req]); return status ? status(req) : { status: 'unknown' }; },
   } };
@@ -77,4 +77,21 @@ test('opaque frame: an unknown outcome is checked by key once; only a proven suc
 test('opaque frame: refusals keep their code and get a plain message', async () => {
   const { D } = boot({ opaque: true, call: () => { throw Object.assign(new Error('revoked'), { code: 'revoked' }); } });
   await assert.rejects(D.items('inbox', 50), e => e.code === 'revoked' && /Permission/.test(e.message));
+});
+
+test('pictures: same-origin keeps the media/ route; an opaque frame asks for a ticket by notification and number only', async () => {
+  const same = boot({ opaque: false });
+  assert.equal(await same.D.picture('SynthA1', 1, '/media/x y/chart.png', 'thumbnail'), 'media/media/x%20y/chart.png');
+  assert.equal(same.calls.length, 0);
+  const { D, calls, fetches } = boot({ opaque: true });
+  assert.equal(await D.picture('SynthA1', 2, '/media/x/chart.png', 'thumbnail'), 'http://content.example:9/t/' + 'x'.repeat(43));
+  await D.picture('SynthA1', 2, '/media/x/chart.png', 'read');
+  await D.picture('SynthA1', 2, '/media/x/chart.png', 'anything-else');
+  assert.deepEqual(calls, [['media', { resourceId: 'n:SynthA1:2', purpose: 'thumbnail' }], ['media', { resourceId: 'n:SynthA1:2', purpose: 'read' }], ['media', { resourceId: 'n:SynthA1:2', purpose: 'thumbnail' }]]);
+  assert.ok(!JSON.stringify(calls).includes('/media/x/chart.png'), 'the path never leaves the page');
+  assert.equal(fetches.length, 0);
+  const denied = boot({ opaque: true, media: () => { throw Object.assign(new Error('x'), { code: 'not_allowed' }); } });
+  await assert.rejects(denied.D.picture('SynthA1', 1, '/p.png', 'thumbnail'), { code: 'not_allowed' });
+  const odd = boot({ opaque: true, media: () => ({ kind: 'blob' }) });
+  await assert.rejects(odd.D.picture('SynthA1', 1, '/p.png', 'thumbnail'), { code: 'unavailable' });
 });
