@@ -76,6 +76,7 @@ def notifications_recent(since="24h", limit=20):
 # ---- Inbox: the owner's view of everything sent here, with read / flag / archive ----
 # The page and its API live on this front at /notifications/ (the Wizard shell opens it at the same path on its own
 # origin). ntfy keeps the messages (30 days); this keeps only the owner's marks, in a small JSON file.
+import hashlib
 import tempfile
 import threading
 
@@ -120,6 +121,18 @@ def _messages(since="all"):
     return out
 
 
+def mark_revision(i, read, flag, archived):
+    """The owner's marks on one item, as a short digest. The Wizard shell's typed browser operations
+    (browser trust, WIZARD_BROWSER_BOUNDARY) send it back as `expect` so a mark only lands on the state the
+    owner was looking at. Same input and digest as the Agent Service's adapter (JSON with no spaces)."""
+    raw = json.dumps(["notification-mark-v1", str(i), bool(read), bool(flag), bool(archived)], separators=(",", ":"))
+    return "r-" + hashlib.sha256(raw.encode()).hexdigest()[:16]
+
+
+class MarkConflict(Exception):
+    """An `expect` revision no longer matches: nothing was written."""
+
+
 def inbox_items(view="inbox", limit=200):
     st = _load_state()
     items = []
@@ -130,6 +143,7 @@ def inbox_items(view="inbox", limit=200):
               "priority": m.get("priority", 3), "link": m.get("click", ""), "tags": tags,
               "source": "cron" if "cron" in tags else "agent",
               "read": bool(s.get("read")), "flag": bool(s.get("flag")), "archived": bool(s.get("archived"))}
+        it["revision"] = mark_revision(it["id"], it["read"], it["flag"], it["archived"])
         items.append(it)
     counts = {"unread": sum(1 for i in items if not i["read"] and not i["archived"]),
               "needs": sum(1 for i in items if not i["read"] and not i["archived"] and i["priority"] >= 4),
@@ -182,15 +196,24 @@ def _prune_marks(st, now):
     return out
 
 
-def inbox_mark(ids, at=None, **marks):
+def inbox_mark(ids, at=None, expect=None, **marks):
     ids = [str(i)[:128] if _app_id(str(i)) else str(i)[:40] for i in (ids or [])][:500]
     keep = {k: bool(v) for k, v in marks.items() if k in ("read", "flag", "archived") and v is not None}
     if not ids or not keep:
         raise ValueError("give ids and at least one of read, flag, archived")
+    if expect is not None and (not isinstance(expect, dict) or set(expect) != set(ids)
+                               or not all(isinstance(v, str) and len(v) <= 40 for v in expect.values())):
+        raise ValueError("expect needs one revision for every id")
     at = at if isinstance(at, dict) else {}
     now = time.time()
     with _lock:
         st = _load_state()
+        if expect is not None:
+            # Compare-and-set: every item must still carry the marks the caller saw, or nothing is written.
+            for i in ids:
+                cur = st.get(i, {})
+                if mark_revision(i, cur.get("read"), cur.get("flag"), cur.get("archived")) != expect[i]:
+                    raise MarkConflict(i)
         for i in ids:
             cur = st.get(i, {})
             cur.update(keep)
@@ -511,7 +534,12 @@ def inbox_route(method, path, query, headers, body):
         if not headers.get("content-type", "").startswith("application/json"):
             return _json(415, {"error": "send application/json"})
         d = json.loads(body or b"{}")
-        return _json(200, inbox_mark(d.get("ids"), at=d.get("at"), read=d.get("read"), flag=d.get("flag"), archived=d.get("archived")))
+        try:
+            return _json(200, inbox_mark(d.get("ids"), at=d.get("at"), expect=d.get("expect"), read=d.get("read"), flag=d.get("flag"), archived=d.get("archived")))
+        except MarkConflict:
+            return _json(409, {"error": "conflict"})
+        except ValueError as e:
+            return _json(400, {"error": str(e)})
     if method == "GET" and sub == "api/marks":
         return _json(200, app_marks())
     if method == "GET" and sub == "api/sources":
@@ -567,7 +595,9 @@ PAGE_HTML = """<!doctype html>
 <title>Notifications</title>
 <script>try { if (window.parent !== window) document.documentElement.classList.add('wz-hosted'); } catch (e) { document.documentElement.classList.add('wz-hosted'); }</script>
 <link rel="stylesheet" href="inbox.css">
+<script src="/wizard-os-home/core/browser-boundary-client.js" onerror="this.remove()"></script>
 <script src="/wizard-os-home/core/app-client.js" onerror="this.remove()"></script>
+<script src="minimal-data.js"></script>
 <script defer src="inbox.js"></script>
 </head>
 <body>
@@ -650,12 +680,8 @@ PAGE_JS = r"""'use strict';
   const ago = t => { const s = Date.now() / 1000 - t; if (s < 60) return 'now'; if (s < 3600) return Math.floor(s / 60) + 'm';
     if (s < 86400) return Math.floor(s / 3600) + 'h'; const d = new Date(t * 1000); return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' }); };
   const say = t => { el('status').textContent = t || ''; };
-  async function api(path, data) {
-    const r = await fetch('api/' + path, data ? { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) } : { cache: 'no-store' });
-    const b = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(b.error || 'Notifications are not reachable right now.');
-    return b;
-  }
+  // Reads and marks: this app's api/ normally, typed shell operations in an opaque frame (minimal-data.js).
+  const D = window.NotifData;
   const plain = t => String(t || '').replace(/\[([^\]]+)\]\((https?:[^)]+)\)/g, (m, t) => t).replace(/^\s*[-*]\s+/gm, '').replace(/\*\*|`/g, '').trim();
   function node(tag, cls, text) { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; }
   function row(it) {
@@ -686,10 +712,10 @@ PAGE_JS = r"""'use strict';
     el('empty').hidden = items.length > 0;
     el('empty-p').textContent = view === 'flagged' ? 'Flag a notification to keep it here.' : view === 'archive' ? 'Archived notifications stay here for 30 days.' : 'Scheduled jobs and your Wizard\u2019s notes land here.';
     el('allread').hidden = view !== 'inbox' || !c.unread;
-    try { parent !== window && parent.postMessage({ type: 'wizard:notifications:count', unread: c.unread, needs: c.needs }, location.origin); } catch (e) {}
+    D.count(c);
   }
-  async function load() { try { paint(await api('items?view=' + view)); say(''); } catch (e) { say(e.message); } }
-  async function mark(ids, marks) { try { await api('mark', Object.assign({ ids }, marks)); await load(); } catch (e) { say(e.message); } }
+  async function load() { try { paint(await D.items(view, 200)); say(''); } catch (e) { say(e.message); } }
+  async function mark(ids, marks) { try { await D.mark(ids, marks, items); await load(); } catch (e) { say(e.message); if (e.code === 'conflict') load(); } }
   document.addEventListener('click', e => {
     const tab = e.target.closest('[role=tab]');
     if (tab) { view = tab.dataset.view; open = ''; document.querySelectorAll('[role=tab]').forEach(t => t.setAttribute('aria-selected', String(t === tab))); el('scroll').scrollTop = 0; return load(); }
@@ -704,6 +730,8 @@ PAGE_JS = r"""'use strict';
   function countsNow() { return { unread: Number(el('c-inbox').textContent || 0), flagged: Number(el('c-flagged').textContent || 0), needs: 0 }; }
   // Back inside the shell: an open item closes first.
   window.__wizardCloseOverlay = () => { if (!open) return false; open = ''; paint({ items, counts: countsNow() }); return true; };
+  // The same step through the shared Back (also the only Back an opaque frame receives).
+  window.WizardApp?.back?.register?.({ canGoBack: () => !!open, back: () => window.__wizardCloseOverlay() });
   document.addEventListener('visibilitychange', () => { if (!document.hidden) load(); });
   setInterval(() => { if (!document.hidden) load(); }, 60000);
   load();
