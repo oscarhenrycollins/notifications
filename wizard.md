@@ -28,11 +28,12 @@ view:
   path: /notifications/
   port: 8080
 # Browser trust preview only (WIZARD_BROWSER_BOUNDARY, default off): in an opaque frame both screens read and
-# mark through these two reviewed operations; nothing is granted until the owner grants it.
+# mark through these two reviewed operations and show pictures through 60 s media tickets (notifications.media);
+# nothing is granted until the owner grants it.
 browser_contract:
   version: 1
   isolation: opaque
-  operations: [notifications.inbox, notifications.mark]
+  operations: [notifications.inbox, notifications.mark, notifications.media]
 ---
 
 # Notifications

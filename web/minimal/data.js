@@ -2,7 +2,7 @@
  * Normal Wizard: same-origin fetches of this app's own api/ (unchanged).
  * Browser trust preview (WIZARD_BROWSER_BOUNDARY, default off): the shell loads this page in an opaque
  * sandbox (origin "null"), so the page has no direct API. It asks the shell for two reviewed, typed
- * operations through WizardApp.data: notifications.inbox and notifications.mark. The shell and the Agent
+ * operations through WizardApp.data: notifications.inbox and notifications.mark (pictures: WizardApp.media). The shell and the Agent
  * Service check the installed app's grants for each call; this page never names its own identity. */
 'use strict';
 (() => {
@@ -78,5 +78,17 @@
     if (opaque || parent === window) return;
     try { parent.postMessage({ type: 'wizard:notifications:count', unread: Number(c && c.unread) || 0, needs: Number(c && c.needs) || 0 }, location.origin); } catch (_) {}
   }
-  window.NotifData = Object.freeze({ opaque, items, mark, count });
+  /* One picture of one notification. Same-origin: this app's media/ route, unchanged. Browser trust preview: the
+   * page has no route to the bytes; it names the notification and the picture's number and the shell returns a
+   * 60 s ticket URL on a separate content origin (never a path, never the owner origin). */
+  async function picture(itemId, index, path, purpose) {
+    if (!opaque) return 'media' + String(path).split('/').map(encodeURIComponent).join('/');
+    await connected();
+    try {
+      const t = await window.WizardApp.media.open({ resourceId: 'n:' + itemId + ':' + index, purpose: purpose === 'read' ? 'read' : 'thumbnail' });
+      if (!t || t.kind !== 'ticket' || typeof t.url !== 'string') throw { code: 'unavailable' };
+      return t.url;
+    } catch (e) { throw failure(e); }
+  }
+  window.NotifData = Object.freeze({ opaque, items, mark, count, picture });
 })();

@@ -142,19 +142,34 @@
     a.target = '_blank'; return a;
   }
   const mediaURL = path => 'media' + path.split('/').map(encodeURIComponent).join('/');
-  function mediaNode(block) {
-    const url = mediaURL(block.path), name = 'Picture ' + block.index;
-    const a = node('a', null, 'thumb'); a.href = url; a.setAttribute('aria-label', 'Open ' + name.toLowerCase());
-    const img = node('img'); img.alt = name; img.loading = 'lazy'; img.decoding = 'async'; img.src = url;
-    img.onerror = () => { const miss = node('p', 'Picture unavailable', 'thumb-missing'); a.replaceWith(miss); };
+  function mediaNode(block, itemId) {
+    const name = 'Picture ' + block.index;
+    const a = node('a', null, 'thumb'); a.setAttribute('aria-label', 'Open ' + name.toLowerCase());
+    const img = node('img'); img.alt = name; img.decoding = 'async';
+    const miss = () => { if (a.isConnected) a.replaceWith(node('p', 'Picture unavailable', 'thumb-missing')); };
     a.append(img);
-    a.onclick = e => { if (e.defaultPrevented) return; e.preventDefault(); openViewer(url, name); };
+    if (!D.opaque) {
+      const url = mediaURL(block.path); a.href = url; img.loading = 'lazy'; img.src = url; img.onerror = miss;
+      a.onclick = e => { if (e.defaultPrevented) return; e.preventDefault(); openViewer(url, name); };
+      return a;
+    }
+    // Browser trust preview: a 60 s ticket per load (no lazy loading, it would outlive the ticket); one renewal if
+    // it lapsed before the picture arrived. No cookies or Referer go with it.
+    a.href = '#'; img.crossOrigin = 'anonymous'; img.referrerPolicy = 'no-referrer';
+    let renewed = false;
+    const load = () => D.picture(itemId, block.index, block.path, 'thumbnail').then(u => { img.src = u; }, miss);
+    img.onerror = () => { if (renewed) return miss(); renewed = true; load(); };
+    load();
+    a.onclick = e => {
+      if (e.defaultPrevented) return; e.preventDefault();
+      D.picture(itemId, block.index, block.path, 'read').then(u => openViewer(u, name, true), err => say(err.message));
+    };
     return a;
   }
-  function paintBody(blocks, primaryHref) {
+  function paintBody(blocks, primaryHref, itemId) {
     const out = [];
     for (const b of blocks) {
-      if (b.type === 'media') { out.push(mediaNode(b)); continue; }
+      if (b.type === 'media') { out.push(mediaNode(b, itemId)); continue; }
       const p = node('p');
       b.lines.forEach((runs, i) => {
         if (i) p.append(node('br'));
@@ -169,8 +184,10 @@
     }
     el('body').replaceChildren(...out);
   }
-  function openViewer(url, name) {
-    const v = el('viewer'), img = el('viewer-img'); img.src = url; img.alt = name; v.hidden = false; el('viewer-close').focus();
+  function openViewer(url, name, ticket) {
+    const v = el('viewer'), img = el('viewer-img');
+    if (ticket) { img.crossOrigin = 'anonymous'; img.referrerPolicy = 'no-referrer'; } else { img.removeAttribute('crossorigin'); img.removeAttribute('referrerpolicy'); }
+    img.src = url; img.alt = name; v.hidden = false; el('viewer-close').focus();
   }
   function closeViewer() { if (el('viewer').hidden) return false; el('viewer').hidden = true; el('viewer-img').removeAttribute('src'); return true; }
   // ---- actions ----
@@ -201,7 +218,7 @@
     // The primary button opens the link, so the body never shows it a second time: a sole inline copy is
     // removed, and when the body has other links too the copy is quieted.
     const parsed = R.parse(it.message, Number(it.time)), link = primaryLink(it, parsed);
-    paintBody(link ? R.dropLink(parsed, link.href) : parsed, link ? link.href : '');
+    paintBody(link ? R.dropLink(parsed, link.href) : parsed, link ? link.href : '', it.id);
     const primary = el('primary'), row = el('actions');
     if (link) {
       const a = node('a', null, 'btn-primary'); a.href = link.href; a.target = '_blank'; a.rel = 'noopener noreferrer';
