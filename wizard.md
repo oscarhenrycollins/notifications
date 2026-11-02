@@ -6,7 +6,7 @@ type: service
 category: system
 kind: agent-app
 tags: [productivity]
-version: 2.29.0-wizard15
+version: 2.29.0-wizard16
 summary: Your Wizard's own notification server. The agent tells you when something is done or needs you.
 icon: icon.png
 license: Apache-2.0
@@ -27,6 +27,12 @@ health: /v1/health
 view:
   path: /notifications/
   port: 8080
+# Browser trust preview only (WIZARD_BROWSER_BOUNDARY, default off): in an opaque frame both screens read and
+# mark through these two reviewed operations; nothing is granted until the owner grants it.
+browser_contract:
+  version: 1
+  isolation: opaque
+  operations: [notifications.inbox, notifications.mark]
 ---
 
 # Notifications

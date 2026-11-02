@@ -16,12 +16,8 @@
     const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('aria-hidden', 'true');
     const p = document.createElementNS('http://www.w3.org/2000/svg', 'path'); p.setAttribute('d', ICONS[name]); svg.append(p); return svg;
   }
-  async function api(path, data) {
-    const response = await fetch('api/' + path, data ? {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data)} : {cache: 'no-store'});
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Notifications are not reachable. Try Refresh.');
-    return result;
-  }
+  // Reads and marks go through data.js: this app's api/ normally, typed shell operations in an opaque frame.
+  const D = window.NotifData;
   function visible() { return filter === 'unread' ? items.filter(it => !it.read) : items; }
   function paint() {
     if (strip.busy()) { strip.dirty = true; return; }
@@ -53,7 +49,8 @@
     let G = null, ghost = null, anims = [], blockClick = 0;
     const api = {dirty: false};
     function phone() {
-      try { const s = parent !== window && parent.document.documentElement.dataset.shell; if (s) return s === 'phone'; } catch (_) {}
+      // An opaque frame (browser trust preview) cannot read the shell document; it uses the pointer instead.
+      if (!D.opaque) try { const s = parent !== window && parent.document.documentElement.dataset.shell; if (s) return s === 'phone'; } catch (_) {}
       return matchMedia('(pointer: coarse)').matches;
     }
     api.on = () => { const skin = document.documentElement.dataset.skin; return (!skin || OURS.has(skin)) && phone() && innerWidth < 768; };
@@ -183,9 +180,10 @@
   }
   /* Reply needs a Wizard that can open a Chats draft; on an older Wizard it is simply not offered. */
   const canReply = () => typeof window.WizardApp?.nav?.openContextDraft === 'function';
-  function startChat(it) {
+  // The shell answers at once in the same document, or later through the opaque frame's channel.
+  async function startChat(it) {
     try {
-      const receipt = window.WizardApp.nav.openContextDraft({id: String(it.id), title: titleOf(it), message: String(it.message || '')});
+      const receipt = await window.WizardApp.nav.openContextDraft({id: String(it.id), title: titleOf(it), message: String(it.message || '')});
       if (receipt?.kind !== 'unsent-draft' || receipt.sent !== false) throw new Error('Could not confirm an unsent draft.');
       say('Reply opened in Chats. Nothing sent.');
     } catch (error) { say(error.message || 'Could not open Chats.'); }
@@ -226,7 +224,7 @@
     const version = ++generation;
     const view = filter === 'unread' ? 'inbox' : filter;
     try {
-      const result = await api('items?view=' + encodeURIComponent(view) + '&limit=500');
+      const result = await D.items(view, 500);
       if (version !== generation) return;
       if (!Array.isArray(result.items)) throw new Error('Notifications returned an invalid list.');
       items = result.items;
@@ -234,8 +232,7 @@
       // A background refresh never rebuilds an open detail (pictures and scroll stay put).
       if (selected) paintList(); else paint();
       say('');
-      const c = result.counts || {};
-      if (parent !== window) parent.postMessage({type: 'wizard:notifications:count', unread: Number(c.unread) || 0, needs: Number(c.needs) || 0}, location.origin);
+      D.count(result.counts || {});
     } catch (error) { if (version === generation) say(error.message); }
   }
   function paintList() { if (strip.busy()) { strip.dirty = true; return; } const keep = selected; selected = null; const top = el('scroll').scrollTop; paint(); selected = keep; el('overview').hidden = true; el('detail').hidden = false; el('toolbar').hidden = true; document.documentElement.classList.add('nt-detail'); el('scroll').scrollTop = top; }
@@ -244,10 +241,10 @@
     busy = true; if (selected) paintActionsOnly();
     let ok = false;
     try {
-      await api('mark', {ids, ...marks}); ok = true;
+      await D.mark(ids, marks, items); ok = true;
       if (selected && ids.includes(selected.id)) selected = {...selected, ...marks, ...(marks.archived === true ? {read: true} : {})};
       await load();
-    } catch (error) { say(error.message); }
+    } catch (error) { say(error.message); if (error.code === 'conflict') load(); }
     finally { busy = false; if (selected) paintActionsOnly(); }
     return ok;
   }
