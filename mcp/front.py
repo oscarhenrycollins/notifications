@@ -103,8 +103,14 @@ async def serve_route(reader, writer, fn, method, target, rest):
         code, ctype, data = await asyncio.to_thread(fn, method, path, query, headers, body)
     except Exception as e:  # an app route error is a 500 for that request only
         code, ctype, data = 500, "application/json", json.dumps({"error": "%s: %s" % (type(e).__name__, e)}).encode()
-    head = "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n" % (
-        code, REASONS.get(code, "OK"), ctype, len(data))
+    # App pages are framed only by the Wizard shell on this same origin (a Wizard window, opaque or not); a page on
+    # another site must not frame the owner's inbox (wizard-os 389 rehearsal: /notifications/ rendered inside a
+    # cross-site frame). frame-ancestors 'self' and X-Frame-Options SAMEORIGIN both compare the ancestors with this
+    # page's own URL origin, so the shell's opaque sandboxed window still loads it.
+    frame = ("X-Frame-Options: SAMEORIGIN\r\nContent-Security-Policy: frame-ancestors 'self'\r\n"
+             if str(ctype).startswith("text/html") else "")
+    head = "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n%sConnection: close\r\n\r\n" % (
+        code, REASONS.get(code, "OK"), ctype, len(data), frame)
     writer.write(head.encode() + data)
     try:
         await writer.drain()
