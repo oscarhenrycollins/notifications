@@ -36,6 +36,12 @@ services:
       # Thumbnails: up to four host folders whose images notifications may show (MEDIA:<path> lines), each
       # mounted read-only at its own path. Unset = none.
       INBOX_MEDIA_ROOTS: ${INBOX_MEDIA_1:-}:${INBOX_MEDIA_2:-}:${INBOX_MEDIA_3:-}:${INBOX_MEDIA_4:-}
+      # Browser boundary (default-off; the App Manager writes the first two into this app's own env when it is on):
+      # owner-data paths then answer only the Agent Service adapter's box-local call with this installation's
+      # credential, never a frame, page or network owner login.
+      WIZARD_BROWSER_BOUNDARY: ${WIZARD_BROWSER_BOUNDARY:-0}
+      WIZARD_APP_CREDENTIAL: ${WIZARD_APP_CREDENTIAL:-}
+      WIZARD_GUARDED_PATHS: /notifications/api/,/notifications/media/
     volumes:
     - ${APP_DATA_DIR}/inbox:/data
     - ${HERMES_CRON_DIR:-${APP_DATA_DIR}/no-hermes-cron}:/hermes-cron:ro
@@ -78,6 +84,51 @@ services:
       TOOLS = {}
       ROUTES = {}  # path prefix -> fn(method, path, query, headers, body) -> (status, content_type, bytes); app pages and APIs
       REQUEST = contextvars.ContextVar("request", default={})  # headers of the current /mcp call
+
+      # Browser boundary (default-off, WIZARD_BROWSER_BOUNDARY=1): this listener is reachable straight from the
+      # private network (Tailscale Serve publishes app paths and ports to it directly, not through the shell), so network
+      # owner identity is not authority here. Owner-data paths (WIZARD_GUARDED_PATHS, prefixes) then answer only the
+      # Wizard Agent Service's adapter: a box-local request (no browser or proxy headers) that carries this
+      # installation's app credential (X-Wizard-App-Credential, minted by the App Manager, never given to a browser).
+      # Preflights are refused everywhere under the app's routes, and no CORS header is ever sent.
+      BOUNDARY = os.environ.get("WIZARD_BROWSER_BOUNDARY", "0") == "1"
+      APP_CREDENTIAL = os.environ.get("WIZARD_APP_CREDENTIAL", "").strip()
+      GUARDED = tuple(p.strip() for p in os.environ.get("WIZARD_GUARDED_PATHS", "").split(",") if p.strip())
+      CREDENTIAL_HEADER = "x-wizard-app-credential"
+      BROWSER_HEADERS = ("origin", "cookie", "referer", "sec-fetch-site", "sec-fetch-dest", "sec-fetch-user")
+      NETWORK_HEADERS = ("tailscale-user-login", "tailscale-user-name", "x-forwarded-for", "x-forwarded-host", "forwarded",
+                         "x-real-ip", "via")
+
+
+      def boundary_config_error():
+          """Why the boundary cannot start, or "" (fail closed: never run unguarded with the flag on)."""
+          if not BOUNDARY:
+              return ""
+          if len(APP_CREDENTIAL) != 64 or any(c not in "0123456789abcdef" for c in APP_CREDENTIAL):
+              return "WIZARD_BROWSER_BOUNDARY=1 needs WIZARD_APP_CREDENTIAL (64 lowercase hex, from the App Manager)"
+          if not GUARDED or not all(p.startswith("/") and p.endswith("/") for p in GUARDED):
+              return "WIZARD_BROWSER_BOUNDARY=1 needs WIZARD_GUARDED_PATHS (comma-separated /prefix/ paths)"
+          return ""
+
+
+      def listener_gate(method, path, raw_headers, route_prefixes=()):
+          """(status, error) when the boundary refuses this request, else None. raw_headers: [(lower name, value)]."""
+          if not BOUNDARY:
+              return None
+          if method == "OPTIONS" and any(path == p.rstrip("/") or path.startswith(p) for p in tuple(route_prefixes) + GUARDED):
+              return 403, "preflight_refused"
+          if not any(path == p.rstrip("/") or path.startswith(p) for p in GUARDED):
+              return None
+          names = [k for k, _ in raw_headers]
+          if any(k in BROWSER_HEADERS for k in names):
+              return 403, "browser_request_refused"       # frames and pages, even with a credential they should never hold
+          if any(k in NETWORK_HEADERS or k.startswith("cf-") for k in names):
+              return 403, "network_identity_refused"      # an owner login from the network is not app authority
+          supplied = [v for k, v in raw_headers if k == CREDENTIAL_HEADER]
+          import hmac
+          if len(supplied) != 1 or not hmac.compare_digest(supplied[0].strip().encode("latin-1"), APP_CREDENTIAL.encode()):
+              return 401, "adapter_credential_required"
+          return None
 
 
       def tool(name, description, props=None, required=()):
@@ -274,6 +325,12 @@ services:
           line, _, rest = head.partition(b"\r\n")
           parts = line.decode("latin-1").split(" ")
           path = parts[1].split("?", 1)[0] if len(parts) >= 3 else ""
+          if BOUNDARY:
+              raw = [(k.strip().lower(), v.strip()) for k, _, v in
+                     (l.partition(":") for l in rest.decode("latin-1").split("\r\n") if ":" in l)]
+              refused = listener_gate(parts[0], path, raw, ROUTES.keys())
+              if refused:
+                  return await respond(writer, refused[0], {"error": refused[1]}, "Cache-Control: no-store\r\n")
           for prefix, fn in ROUTES.items():
               if path == prefix.rstrip("/") or path.startswith(prefix):
                   return await serve_route(reader, writer, fn, parts[0], parts[1], rest)
@@ -300,6 +357,9 @@ services:
 
 
       async def main():
+          problem = boundary_config_error()
+          if problem:
+              raise SystemExit(problem)
           srv = await asyncio.start_server(handle, "0.0.0.0", PORT, limit=MAX_HEAD)
           async with srv:
               await srv.serve_forever()
