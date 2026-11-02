@@ -431,6 +431,20 @@ def daily_items(hours=24, now=None):
     return {"hours": hours, "groups": list(groups.values())}
 
 
+@tool("notifications_overnight", "What waits for the Morning Report's Overnight section: notifications of the last "
+      "`hours` (default 24) whose source the owner set to Morning report (Daily), grouped by source. Read-only. "
+      "Use it instead of GET /notifications/api/daily, which answers only Wizard's browser adapter when the browser "
+      "boundary is on.", {"hours": {"type": "integer", "minimum": 1, "maximum": 72, "description": "default 24"}})
+def notifications_overnight(hours=24):
+    _box_only()
+    h = REQUEST.get()
+    if any(h.get(k) for k in ("origin", "sec-fetch-site", "sec-fetch-dest", "cookie", "referer")):
+        raise PermissionError("the overnight roll-up is for apps on this box, not for web pages")
+    if not isinstance(hours, int) or isinstance(hours, bool) or not 1 <= hours <= 72:
+        raise ValueError("hours must be a whole number from 1 to 72")
+    return daily_items(hours)
+
+
 @tool("notifications_inbox", "Read the owner's notification inbox (agent notes and scheduled-job results) with what they "
       "have read, flagged or archived. Use it to answer 'what came in', 'what failed overnight' or 'what did I flag'.",
       {"view": {"type": "string", "enum": ["inbox", "flagged", "archive", "all"], "description": "default inbox"},
