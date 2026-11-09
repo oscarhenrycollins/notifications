@@ -17,7 +17,7 @@ services:
     mem_limit: 128m
     environment:
       WIZARD_APP: notifications
-      APP_VERSION: 2.29.0-wizard27
+      APP_VERSION: 2.29.0-wizard28
       FRONT_PORT: '8080'
       UPSTREAM_HOST: notifications-engine
       UPSTREAM_PORT: '8080'
@@ -34,6 +34,8 @@ services:
       CRON_QUIET_JOBS: ${CRON_QUIET_JOBS:-}
       # job=app pairs: those jobs' results are listed under that app (tag app:<id>) instead of the agent's own.
       CRON_JOB_APPS: ${CRON_JOB_APPS:-}
+      # job ids whose agent replies discuss failures as their subject (AI reviews): failed only via Error/Status/[CRON_FAILURE].
+      CRON_TRUSTED_JOBS: ${CRON_TRUSTED_JOBS:-}
       CRON_RELAY: ${CRON_RELAY:-on}
       # Failures go to the agent's 'Failure responder' cron job when one exists (auto); owner = always post.
       CRON_FAILURES: ${CRON_FAILURES:-auto}
