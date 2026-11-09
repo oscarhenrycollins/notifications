@@ -250,6 +250,14 @@ class RelayTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             ns["notify"]("x", app="../etc")
 
+    def test_trusted_job_reply_mentioning_failures_is_not_a_failure(self):
+        cs = load({"CRON_TRUSTED_JOBS": "rev1"})["cron_summarize"]
+        ok = run_md(response='I passed #524 ("failed updates file a bug"); #528 reports failed OS updates.')
+        self.assertEqual(cs(ok, "rev1")[0], False)
+        self.assertEqual(cs(ok, "job1")[0], True)            # untrusted jobs keep the keyword rule
+        self.assertEqual(cs(run_md(response="[CRON_FAILURE]\nchild crashed"), "rev1")[0], True)
+        self.assertEqual(cs(run_md(status="failed", response="it broke"), "rev1")[0], True)
+
     def test_compose_is_generated_and_has_no_dollar_in_front(self):
         self.assertNotIn("$", (ROOT / "mcp" / "relay.py").read_text())
 

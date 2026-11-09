@@ -19,6 +19,8 @@
 # and the responder's own runs always post (its failures included), so a broken responder is never silent.
 # CRON_FAILURES=owner forces the old behaviour (every failure posts); =agent forces routing even without a responder.
 #
+# CRON_TRUSTED_JOBS (job ids): agent jobs whose replies discuss failures as their subject (e.g. AI reviews); their
+# run counts as failed only from Hermes' Error/Status or a [CRON_FAILURE] first line, never from keywords.
 # Which app a job is about: CRON_JOB_APPS = "<job id or name>=<app id>, ..." tags that job's posts `app:<app id>`
 # (APP_TAG), so the inbox files them under that app (its name, its mark, its own Chats / Badge / Off choice) instead
 # of the agent's catch-all group. Unlisted jobs are the agent's own. A shell without that app installed shows them as
@@ -31,6 +33,7 @@ CRON_TOPIC = os.environ.get("CRON_TOPIC", "cron")
 CRON_RELAY = os.environ.get("CRON_RELAY", "on").strip().lower() not in ("off", "0", "false", "no")
 CRON_EVERY = max(30, int(os.environ.get("CRON_EVERY_S", "300") or 300))
 CRON_LOOKBACK_H = float(os.environ.get("CRON_LOOKBACK_H", "24") or 24)
+CRON_TRUSTED = {x.strip().lower() for x in os.environ.get("CRON_TRUSTED_JOBS", "").split(",") if x.strip()}
 CRON_QUIET = {x.strip().lower() for x in os.environ.get("CRON_QUIET_JOBS", "").split(",") if x.strip()}
 CRON_STATE = os.environ.get("CRON_STATE", os.path.join(os.path.dirname(STATE_FILE) or "/data", "cron-relay.json"))
 CRON_FAILURES = os.environ.get("CRON_FAILURES", "auto").strip().lower()
@@ -126,7 +129,7 @@ def cron_silent(body):
     return any(_SILENT_LINE.fullmatch(c) for c in (body.strip(), lines[0], lines[-1]))
 
 
-def cron_summarize(text):
+def cron_summarize(text, job=None):
     """(failed, body) for a run worth telling the owner about, or None when the run is silent."""
     status = (re.search(r"^\*\*Status:\*\*[ \t]*(.+)", text, re.M) or [None, ""])[1].strip()
     if any(s in status for s in ("silent", "no_change")):
@@ -136,13 +139,20 @@ def cron_summarize(text):
     if err:
         body = err.strip("`\n ") or "The job failed."
     else:
-        body = _section(text, "Response") or _section(text, "Script Output")
+        resp = _section(text, "Response")
+        body = resp or _section(text, "Script Output")
         if not body:
             parts = re.split(r"^---%s" % _EOL, text, maxsplit=1, flags=re.M)
             body = parts[1] if len(parts) > 1 else text.split(status, 1)[-1] if status else ""
     body = body.strip()
     if not body or cron_silent(body):
         return None
+    if body.split("\n", 1)[0].strip().upper() == "[CRON_FAILURE]":
+        return True, body
+    if not err and resp and job and job.lower() in CRON_TRUSTED:
+        # Trusted agent jobs (reviews, reports) mention "failed" as their subject; only Hermes' Error/Status or
+        # [CRON_FAILURE] marks their run failed.
+        return failed, body
     head = body[:240].lower()
     if re.search(r"\b(failed|failure|needs review|needs you|error|stale|not_started|action required)\b", head) and \
             not re.search(r"\b(no|0) (failures|errors)\b|all monitored checks passed", head):
@@ -215,7 +225,7 @@ def cron_relay_once(cron_dir=None, state_path=None, post=None, now=None):
                     raw = f.read()
             except OSError:
                 continue
-            s = cron_summarize(raw)
+            s = cron_summarize(raw, job)
             if s is None:
                 if not re.search(r"^\*\*Status:\*\*[ \t]*(error|failed|blocked)", raw, re.M | re.I):
                     alerts.pop(job, None)
