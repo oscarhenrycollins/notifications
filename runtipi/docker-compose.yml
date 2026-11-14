@@ -17,7 +17,7 @@ services:
     mem_limit: 128m
     environment:
       WIZARD_APP: notifications
-      APP_VERSION: 2.29.0-wizard28
+      APP_VERSION: 2.29.0-wizard29
       FRONT_PORT: '8080'
       UPSTREAM_HOST: notifications-engine
       UPSTREAM_PORT: '8080'
@@ -1228,7 +1228,7 @@ services:
           return (rest[:nxt.start()] if nxt and name != "Response" else rest).strip()
 
 
-      _SILENT_LINE = re.compile(r"\[?\s*(SILENT|NO[_ ]REPLY)\s*\]?[.!]?", re.I)
+      _SILENT_LINE = re.compile(r"\[?\s*(SILENT|NO[_ ]REPLY|NO[_ ]CHANGE)\s*\]?[.!]?", re.I)
 
 
       def cron_silent(body):

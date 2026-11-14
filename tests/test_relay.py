@@ -264,3 +264,12 @@ class RelayTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NoChangeMarker(unittest.TestCase):
+    def test_no_change_is_silent(self):
+        R = load()
+        self.assertTrue(R["cron_silent"]("Last message is from Miguel.\n\nNO_CHANGE  14 Nov 11:21 UTC".split("  14")[0]))
+        self.assertTrue(R["cron_silent"]("NO_CHANGE"))
+        self.assertIsNone(R["cron_summarize"](run_md(response="Nothing needs a draft.\n\nNO_CHANGE")))
+        self.assertFalse(R["cron_silent"]("Drafted a reply to the car-rental chat."))

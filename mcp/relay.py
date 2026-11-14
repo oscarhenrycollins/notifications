@@ -114,7 +114,7 @@ def _section(text, name):
     return (rest[:nxt.start()] if nxt and name != "Response" else rest).strip()
 
 
-_SILENT_LINE = re.compile(r"\[?\s*(SILENT|NO[_ ]REPLY)\s*\]?[.!]?", re.I)
+_SILENT_LINE = re.compile(r"\[?\s*(SILENT|NO[_ ]REPLY|NO[_ ]CHANGE)\s*\]?[.!]?", re.I)
 
 
 def cron_silent(body):
